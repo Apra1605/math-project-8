@@ -1,0 +1,779 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Robot Controller</title>
+  <style>
+    :root {
+      --bg1: #0a1f2e;
+      --bg2: #123b53;
+      --card: rgba(255, 255, 255, 0.12);
+      --text: #f5fbff;
+      --ok: #3ddc97;
+      --warn: #ffd166;
+      --btn: #ffffff;
+      --btn-text: #0f2e42;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 20% 20%, rgba(61, 220, 151, 0.25), transparent 35%),
+        radial-gradient(circle at 80% 80%, rgba(255, 209, 102, 0.2), transparent 30%),
+        linear-gradient(135deg, var(--bg1), var(--bg2));
+    }
+
+    .panel {
+      width: min(95vw, 980px);
+      padding: 24px;
+      border-radius: 16px;
+      background: var(--card);
+      backdrop-filter: blur(6px);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+    }
+
+    h1 {
+      margin: 0 0 16px;
+      text-align: center;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+      font-size: 1.35rem;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 10px;
+    }
+
+    .forward {
+      grid-column: 1 / -1;
+    }
+
+    button {
+      border: none;
+      border-radius: 12px;
+      padding: 14px 12px;
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--btn-text);
+      background: var(--btn);
+      cursor: pointer;
+      transition: transform 120ms ease, box-shadow 120ms ease;
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+    }
+
+    button:hover { transform: translateY(-1px); }
+    button:active { transform: translateY(1px) scale(0.99); }
+
+    .status {
+      margin-top: 16px;
+      font-size: 0.95rem;
+      text-align: center;
+      min-height: 1.2em;
+      color: var(--warn);
+    }
+
+    .status.ok { color: var(--ok); }
+
+    .camera-wrap {
+      position: relative;
+      margin-top: 16px;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(0, 0, 0, 0.2);
+      aspect-ratio: 16 / 9;
+    }
+
+    #camera {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: cover;
+    }
+
+    #overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .auto-status {
+      margin-top: 10px;
+      text-align: center;
+      font-size: 0.9rem;
+      color: #dff2ff;
+      min-height: 1.2em;
+    }
+
+    .ai-status {
+      margin-top: 8px;
+      text-align: center;
+      font-size: 0.9rem;
+      color: #c9ffe4;
+      min-height: 1.2em;
+    }
+
+    .voice-btn {
+      margin-top: 8px;
+      width: 100%;
+      display: none;
+    }
+
+    .rotate-hint {
+      margin-top: 8px;
+      font-size: 0.85rem;
+      text-align: center;
+      opacity: 0.85;
+      display: none;
+    }
+
+    @media (max-width: 900px) and (orientation: landscape) {
+      .panel {
+        width: 98vw;
+        padding: 14px;
+      }
+
+      .controls {
+        grid-template-columns: repeat(4, 1fr);
+      }
+
+      .forward {
+        grid-column: auto;
+      }
+
+      h1 {
+        font-size: 1.1rem;
+        margin-bottom: 10px;
+      }
+    }
+
+    @media (max-width: 900px) and (orientation: portrait) {
+      .rotate-hint {
+        display: block;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="panel">
+    <h1>Robot Drive Control</h1>
+    <div class="controls">
+      <button class="forward" data-command="FORWARD">FORWARD</button>
+      <button data-command="LEFT">LEFT</button>
+      <button data-command="RIGHT">RIGHT</button>
+      <button data-command="STOP">STOP</button>
+    </div>
+    <div class="camera-wrap">
+      <video id="camera" autoplay playsinline muted></video>
+      <canvas id="overlay"></canvas>
+    </div>
+    <p class="rotate-hint">Tip: rotate phone sideways for best tracking.</p>
+    <p id="autoStatus" class="auto-status">Auto tracking: starting...</p>
+    <p id="aiStatus" class="ai-status">AI voice: waiting for person...</p>
+    <button id="voiceBtn" class="voice-btn" type="button">Tap to Enable Voice Listening</button>
+    <p id="status" class="status">Ready</p>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+
+  <script>
+    const endpoint = "https://192.168.86.22:8443/robot";
+    const smartThingsEndpoint = "https://192.168.86.22:8443/smartthings";
+    const statusEl = document.getElementById("status");
+    const autoStatusEl = document.getElementById("autoStatus");
+    const aiStatusEl = document.getElementById("aiStatus");
+    const voiceBtnEl = document.getElementById("voiceBtn");
+    const cameraEl = document.getElementById("camera");
+    const overlayEl = document.getElementById("overlay");
+    const overlayCtx = overlayEl.getContext("2d");
+    let lastCommand = "";
+    let lastCommandAt = 0;
+    const COMMAND_INTERVAL_MS = 180;
+    const LEFT_THRESHOLD = 0.3;
+    const RIGHT_THRESHOLD = 0.7;
+    const STEER_ENTER_LEFT = 0.24;
+    const STEER_ENTER_RIGHT = 0.76;
+    const CENTER_SMOOTHING = 0.35;
+    const TOP_STOP_THRESHOLD = 0.22;
+    const BOTTOM_STOP_THRESHOLD = 0.72;
+    const KEYPOINT_THRESHOLD = 0.3;
+    const NO_PERSON_RESET_MS = 2500;
+    const GROQ_API_KEY = "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";
+    const GROQ_MODEL = "llama-3.1-8b-instant";
+    const GROQ_MIN_TURN_GAP_MS = 4000;
+    const GROQ_COOLDOWN_MS = 30000;
+    const adjacentPairs = poseDetection.util.getAdjacentPairs(
+      poseDetection.SupportedModels.MoveNet
+    );
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    let personVisible = false;
+    let lastPersonAt = 0;
+    let greetedForCurrentPresence = false;
+    let recognition = null;
+    let recognitionActive = false;
+    let assistantBusy = false;
+    let assistantSpeaking = false;
+    let commandInFlight = false;
+    let queuedCommand = null;
+    let smoothedCenterX = null;
+    let lastSteerCommand = "FORWARD";
+    let voiceEnabled = true;
+    let lastUserText = "";
+    let lastUserTextAt = 0;
+    let lastGroqCallAt = 0;
+    let groqCooldownUntil = 0;
+    let conversation = [
+      {
+        role: "system",
+        content: "You are a warm, friendly robot guide. Keep replies conversational, short, human-like, and never exceed 3 sentences of output. If user asks to control lights, append exactly one machine tag at the end: <SMARTTHINGS action=\"on|off\" target=\"name or all\"/>."
+      }
+    ];
+
+    async function sendCommand(command) {
+      statusEl.textContent = `Sending ${command}...`;
+      statusEl.classList.remove("ok");
+
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: command
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        statusEl.textContent = `${command} sent`;
+        statusEl.classList.add("ok");
+      } catch (error) {
+        statusEl.textContent = `Failed: ${error.message}`;
+        statusEl.classList.remove("ok");
+      }
+    }
+
+    async function dispatchCommand(command) {
+      commandInFlight = true;
+      try {
+        await sendCommand(command);
+      } finally {
+        commandInFlight = false;
+        if (queuedCommand && queuedCommand !== command) {
+          const next = queuedCommand;
+          queuedCommand = null;
+          dispatchCommand(next);
+        }
+      }
+    }
+
+    function sendCommandIfNeeded(command) {
+      const now = Date.now();
+      if (command === lastCommand && now - lastCommandAt < COMMAND_INTERVAL_MS) return;
+      lastCommand = command;
+      lastCommandAt = now;
+      if (commandInFlight) {
+        queuedCommand = command;
+        return;
+      }
+      dispatchCommand(command);
+    }
+
+    function getHumanCenterX(pose) {
+      const required = ["left_shoulder", "right_shoulder", "left_hip", "right_hip", "nose"];
+      const points = pose.keypoints.filter((k) => required.includes(k.name) && (k.score ?? 0) > KEYPOINT_THRESHOLD);
+      if (!points.length) return null;
+      return points.reduce((sum, p) => sum + p.x, 0) / points.length;
+    }
+
+    function getHumanCenterY(pose) {
+      const required = [
+        "nose",
+        "left_shoulder",
+        "right_shoulder",
+        "left_hip",
+        "right_hip",
+        "left_knee",
+        "right_knee",
+        "left_ankle",
+        "right_ankle"
+      ];
+      const points = pose.keypoints.filter((k) => required.includes(k.name) && (k.score ?? 0) > KEYPOINT_THRESHOLD);
+      if (!points.length) return null;
+      return points.reduce((sum, p) => sum + p.y, 0) / points.length;
+    }
+
+    function syncOverlaySize() {
+      const w = cameraEl.videoWidth;
+      const h = cameraEl.videoHeight;
+      if (!w || !h) return;
+      if (overlayEl.width !== w || overlayEl.height !== h) {
+        overlayEl.width = w;
+        overlayEl.height = h;
+      }
+    }
+
+    function drawSkeleton(pose) {
+      syncOverlaySize();
+      overlayCtx.clearRect(0, 0, overlayEl.width, overlayEl.height);
+      if (!pose) return;
+
+      overlayCtx.lineWidth = 3;
+      overlayCtx.strokeStyle = "#3ddc97";
+      overlayCtx.fillStyle = "#ffd166";
+
+      for (const [i, j] of adjacentPairs) {
+        const kp1 = pose.keypoints[i];
+        const kp2 = pose.keypoints[j];
+        if (!kp1 || !kp2) continue;
+        if ((kp1.score ?? 0) < KEYPOINT_THRESHOLD || (kp2.score ?? 0) < KEYPOINT_THRESHOLD) continue;
+
+        overlayCtx.beginPath();
+        overlayCtx.moveTo(kp1.x, kp1.y);
+        overlayCtx.lineTo(kp2.x, kp2.y);
+        overlayCtx.stroke();
+      }
+
+      for (const kp of pose.keypoints) {
+        if ((kp.score ?? 0) < KEYPOINT_THRESHOLD) continue;
+        overlayCtx.beginPath();
+        overlayCtx.arc(kp.x, kp.y, 4, 0, Math.PI * 2);
+        overlayCtx.fill();
+      }
+    }
+
+    function speak(text) {
+      return new Promise((resolve) => {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1.02;
+        utterance.pitch = 1.05;
+        utterance.onstart = () => {
+          assistantSpeaking = true;
+        };
+        utterance.onend = () => {
+          assistantSpeaking = false;
+          maybeStartListening();
+          resolve();
+        };
+        utterance.onerror = () => {
+          assistantSpeaking = false;
+          maybeStartListening();
+          resolve();
+        };
+        window.speechSynthesis.speak(utterance);
+      });
+    }
+
+    function limitToThreeSentences(text) {
+      const cleaned = (text || "").trim();
+      if (!cleaned) return "";
+      const parts = cleaned.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [cleaned];
+      return parts.slice(0, 3).join(" ").trim();
+    }
+
+    function extractSmartThingsTag(text) {
+      const input = String(text || "");
+      const regex = /<SMARTTHINGS\s+action="(on|off)"(?:\s+target="([^"]*)")?\s*\/>/i;
+      const match = input.match(regex);
+      if (!match) {
+        return {
+          cleanedText: input.trim(),
+          action: null,
+          target: null
+        };
+      }
+      const cleanedText = input.replace(regex, "").trim();
+      return {
+        cleanedText,
+        action: String(match[1] || "").toLowerCase(),
+        target: String(match[2] || "all").trim() || "all"
+      };
+    }
+
+    async function runSmartThingsAction(action, target) {
+      const response = await fetch(smartThingsEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, target })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || `SmartThings HTTP ${response.status}`);
+      }
+      const targetText = data.target && data.target !== "all" ? data.target : "lights";
+      const verb = action === "on" ? "on" : "off";
+      return `I turned ${verb} ${targetText}.`;
+    }
+
+    async function askGroq(userText) {
+      const body = {
+        model: GROQ_MODEL,
+        messages: [
+          ...conversation,
+          { role: "user", content: userText }
+        ],
+        temperature: 0.8,
+        max_tokens: 120
+      };
+
+      async function doRequest() {
+        return fetch(
+          "https://api.groq.com/openai/v1/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${GROQ_API_KEY}`
+            },
+            body: JSON.stringify(body)
+          }
+        );
+      }
+
+      async function parseGroqError(response) {
+        let payload = null;
+        let rawText = "";
+        try {
+          payload = await response.clone().json();
+        } catch (_) {
+          try {
+            rawText = await response.clone().text();
+          } catch (_) {
+            rawText = "";
+          }
+        }
+
+        const err = payload?.error || payload || {};
+        const status = err.status || err.type || "UNKNOWN_STATUS";
+        const code = err.code || response.status;
+        const message = err.message || rawText || "Unknown Groq error";
+        let detailText = "";
+
+        if (Array.isArray(err.details) && err.details.length) {
+          detailText = err.details
+            .map((d) => d?.reason || d?.type || JSON.stringify(d))
+            .join(", ");
+        }
+
+        const composed = `Groq ${response.status} (${status}/${code}): ${message}${detailText ? ` [${detailText}]` : ""}`;
+        return composed;
+      }
+
+      let res = await doRequest();
+      if (res.status === 429) {
+        const retryAfter = Number(res.headers.get("retry-after"));
+        const waitMs = Number.isFinite(retryAfter) ? retryAfter * 1000 : 2000;
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        res = await doRequest();
+      }
+
+      if (res.status === 429) {
+        groqCooldownUntil = Date.now() + GROQ_COOLDOWN_MS;
+        throw new Error(await parseGroqError(res));
+      }
+
+      if (!res.ok) {
+        throw new Error(await parseGroqError(res));
+      }
+
+      const data = await res.json();
+      const text = limitToThreeSentences(data.choices?.[0]?.message?.content?.trim());
+
+      if (!text) {
+        throw new Error("No reply text");
+      }
+
+      conversation.push({ role: "user", content: userText });
+      conversation.push({ role: "assistant", content: text });
+      if (conversation.length > 14) {
+        conversation = [conversation[0], ...conversation.slice(-13)];
+      }
+      return text;
+    }
+
+    async function handleUserSpeech(userText) {
+      if (!userText || assistantBusy) return;
+      const now = Date.now();
+      const normalized = userText.toLowerCase().trim();
+      const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+
+      if (wordCount <= 3) {
+        aiStatusEl.textContent = "AI voice: say more than 3 words";
+        return;
+      }
+
+      if (normalized === lastUserText && now - lastUserTextAt < 4000) {
+        aiStatusEl.textContent = "AI voice: duplicate speech ignored";
+        return;
+      }
+
+      if (now < groqCooldownUntil) {
+        const left = Math.ceil((groqCooldownUntil - now) / 1000);
+        aiStatusEl.textContent = `AI voice: Groq cooling down (${left}s)`;
+        await speak("Give me a moment, I hit my message limit. I will respond again shortly.");
+        return;
+      }
+
+      if (now - lastGroqCallAt < GROQ_MIN_TURN_GAP_MS) {
+        aiStatusEl.textContent = "AI voice: waiting before next AI request";
+        return;
+      }
+
+      assistantBusy = true;
+      lastUserText = normalized;
+      lastUserTextAt = now;
+      lastGroqCallAt = now;
+      aiStatusEl.textContent = `AI voice: heard "${userText}"`;
+
+      try {
+        const rawReply = await askGroq(userText);
+        const parsed = extractSmartThingsTag(rawReply);
+        let reply = parsed.cleanedText || rawReply;
+        if (parsed.action) {
+          aiStatusEl.textContent = "AI voice: controlling smart home...";
+          try {
+            const homeReply = await runSmartThingsAction(parsed.action, parsed.target || "all");
+            reply = `${reply} ${homeReply}`.trim();
+          } catch (homeErr) {
+            reply = `${reply} I could not control the light right now.`.trim();
+            aiStatusEl.textContent = `AI voice home error: ${homeErr.message}`;
+          }
+        }
+        reply = limitToThreeSentences(reply);
+        aiStatusEl.textContent = "AI voice: responding...";
+        await speak(reply);
+        aiStatusEl.textContent = "AI voice: listening";
+      } catch (err) {
+        aiStatusEl.textContent = `AI voice error: ${err.message}`;
+        if (String(err.message).toLowerCase().includes("rate limit")) {
+          await speak("I am being rate limited right now. Please wait a few seconds and try again.");
+        }
+      } finally {
+        assistantBusy = false;
+        maybeStartListening();
+      }
+    }
+
+    function setupSpeechRecognition() {
+      if (!SpeechRecognition) {
+        aiStatusEl.textContent = "AI voice unavailable: speech recognition not supported";
+        return;
+      }
+
+      recognition = new SpeechRecognition();
+      recognition.lang = "en-US";
+      recognition.interimResults = false;
+      recognition.continuous = false;
+      recognition.maxAlternatives = 1;
+
+      recognition.onresult = (event) => {
+        const lastResult = event.results?.[event.results.length - 1];
+        if (!lastResult || !lastResult.isFinal) return;
+        const userText = lastResult?.[0]?.transcript?.trim();
+        if (userText) {
+          handleUserSpeech(userText);
+        }
+      };
+
+      recognition.onend = () => {
+        recognitionActive = false;
+        maybeStartListening();
+      };
+
+      recognition.onerror = () => {
+        recognitionActive = false;
+        maybeStartListening();
+      };
+
+      recognition.onnomatch = () => {
+        recognitionActive = false;
+        maybeStartListening();
+      };
+    }
+
+    function maybeStartListening() {
+      if (!recognition || !voiceEnabled || recognitionActive || assistantBusy || assistantSpeaking || !personVisible) return;
+      try {
+        recognition.start();
+        recognitionActive = true;
+        aiStatusEl.textContent = "AI voice: listening";
+      } catch (err) {
+        recognitionActive = false;
+        const msg = String(err?.message || "").toLowerCase();
+        if (msg.includes("notallowed") || msg.includes("gesture") || msg.includes("permission")) {
+          voiceEnabled = false;
+          voiceBtnEl.style.display = "block";
+          aiStatusEl.textContent = "AI voice: tap button to enable listening";
+        }
+      }
+    }
+
+    async function greetPersonOnce() {
+      if (greetedForCurrentPresence) return;
+      greetedForCurrentPresence = true;
+      aiStatusEl.textContent = "AI voice: greeting person";
+      await speak("Hey there! I can see you. Talk to me and I will chat with you.");
+      aiStatusEl.textContent = "AI voice: your turn, I am listening";
+      maybeStartListening();
+    }
+
+    function decideCommand(centerX, centerY, frameWidth, frameHeight) {
+      if (centerX == null || centerY == null || !frameWidth || !frameHeight) return "STOP";
+      const normalizedY = centerY / frameHeight;
+      if (normalizedY <= TOP_STOP_THRESHOLD || normalizedY >= BOTTOM_STOP_THRESHOLD) return "STOP";
+
+      const normalized = centerX / frameWidth;
+      if (smoothedCenterX == null) {
+        smoothedCenterX = normalized;
+      } else {
+        smoothedCenterX = (smoothedCenterX * (1 - CENTER_SMOOTHING)) + (normalized * CENTER_SMOOTHING);
+      }
+
+      // Strong hysteresis to prevent rapid LEFT/RIGHT flipping around center.
+      if (smoothedCenterX >= LEFT_THRESHOLD && smoothedCenterX <= RIGHT_THRESHOLD) {
+        lastSteerCommand = "FORWARD";
+        return "FORWARD";
+      }
+
+      if (lastSteerCommand === "FORWARD") {
+        if (smoothedCenterX < STEER_ENTER_LEFT) {
+          lastSteerCommand = "LEFT";
+          return "LEFT";
+        }
+        if (smoothedCenterX > STEER_ENTER_RIGHT) {
+          lastSteerCommand = "RIGHT";
+          return "RIGHT";
+        }
+        return "FORWARD";
+      }
+
+      if (lastSteerCommand === "LEFT") {
+        if (smoothedCenterX >= LEFT_THRESHOLD) {
+          lastSteerCommand = "FORWARD";
+          return "FORWARD";
+        }
+        return "LEFT";
+      }
+
+      if (lastSteerCommand === "RIGHT") {
+        if (smoothedCenterX <= RIGHT_THRESHOLD) {
+          lastSteerCommand = "FORWARD";
+          return "FORWARD";
+        }
+        return "RIGHT";
+      }
+
+      lastSteerCommand = "FORWARD";
+      return "FORWARD";
+    }
+
+    async function startAutoTracking() {
+      try {
+        await tf.setBackend("webgl");
+        await tf.ready();
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "user",
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        });
+        cameraEl.srcObject = stream;
+
+        await new Promise((resolve) => {
+          cameraEl.onloadedmetadata = () => resolve();
+        });
+
+        const detector = await poseDetection.createDetector(
+          poseDetection.SupportedModels.MoveNet,
+          { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
+        );
+
+        autoStatusEl.textContent = "Auto tracking: running";
+
+        async function trackLoop() {
+          try {
+            const poses = await detector.estimatePoses(cameraEl, { flipHorizontal: false });
+            const pose = poses[0];
+            drawSkeleton(pose);
+            const centerX = pose ? getHumanCenterX(pose) : null;
+            const centerY = pose ? getHumanCenterY(pose) : null;
+            const command = decideCommand(centerX, centerY, cameraEl.videoWidth, cameraEl.videoHeight);
+            personVisible = centerX != null && centerY != null;
+            if (personVisible) {
+              lastPersonAt = Date.now();
+              greetPersonOnce();
+            } else if (Date.now() - lastPersonAt > NO_PERSON_RESET_MS) {
+              greetedForCurrentPresence = false;
+              aiStatusEl.textContent = "AI voice: waiting for person...";
+            }
+
+            if (command === "STOP") {
+              if (personVisible) {
+                autoStatusEl.textContent = "Auto tracking: person too high/low in frame -> STOP";
+              } else {
+                autoStatusEl.textContent = "Auto tracking: no human detected -> STOP";
+              }
+            } else {
+              autoStatusEl.textContent = `Auto tracking: ${command}`;
+            }
+
+            sendCommandIfNeeded(command);
+          } catch (err) {
+            autoStatusEl.textContent = `Auto tracking error: ${err.message}`;
+          }
+
+          requestAnimationFrame(trackLoop);
+        }
+
+        trackLoop();
+      } catch (error) {
+        autoStatusEl.textContent = `Auto tracking unavailable: ${error.message}`;
+      }
+    }
+
+    document.querySelectorAll("button[data-command]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const command = button.dataset.command;
+        lastCommand = command;
+        lastCommandAt = Date.now();
+        await sendCommand(command);
+      });
+    });
+
+    voiceBtnEl.addEventListener("click", () => {
+      voiceEnabled = true;
+      voiceBtnEl.style.display = "none";
+      maybeStartListening();
+    });
+
+    setInterval(() => {
+      maybeStartListening();
+    }, 1000);
+
+    setupSpeechRecognition();
+    startAutoTracking();
+  </script>
+</body>
+</html>
